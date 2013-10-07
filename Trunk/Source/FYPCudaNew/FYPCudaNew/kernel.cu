@@ -232,13 +232,20 @@ int initializeBooleanMatrixInDevice(int* &boolean_matrix){
 }
 
 int initializeBuffer(int* &buffer){
-	int* host_bool_buffer= new int[ADJ_MATRIX_DIM*ADJ_MATRIX_DIM];
-	for(int i=0;i<ADJ_MATRIX_DIM;i++){
-		for(int j=0;j<ADJ_MATRIX_DIM;j++){
-			host_bool_buffer[i*ADJ_MATRIX_DIM+j] = false;
+
+	//buffer size
+	int* host_bool_buffer= new int[ADJ_MATRIX_DIM*ADJ_MATRIX_DIM*MAXHOPS];
+
+	//
+	for(int k=0;k<MAXHOPS;k++){
+		for(int i=0;i<ADJ_MATRIX_DIM;i++){
+			for(int j=0;j<ADJ_MATRIX_DIM;j++){
+				host_bool_buffer[k*ADJ_MATRIX_DIM*ADJ_MATRIX_DIM+ i*ADJ_MATRIX_DIM+j] = false;
+			}
 		}
 	}
-	size_t size_bool =ADJ_MATRIX_DIM*ADJ_MATRIX_DIM*sizeof(int);
+
+	size_t size_bool =MAXHOPS*ADJ_MATRIX_DIM*ADJ_MATRIX_DIM*sizeof(int);
 	cudaMalloc((void**)&buffer,size_bool);
 	cudaCheckErrors("Failed to allocate memory to boolean buffer");
 	cudaMemcpy(buffer,host_bool_buffer,size_bool,cudaMemcpyHostToDevice);
@@ -298,25 +305,32 @@ __global__ void firstExpansion(int* buffer, int*dev_boolean_matrix, int source){
 }
 
 //max id is number of airports
-__global__ void expansion(int* dev_buffer,int* boolean_matrix, int* dev_source_vector,int matrix_dimension){
+__global__ void expansion(int* dev_buffer1,int* boolean_matrix, int* dev_source_vector,int matrix_dimension){
 	
 	int id = blockIdx.x*blockDim.x+threadIdx.x;
-	int row = (int) floor((double)id/matrix_dimension);
-	int column = id%matrix_dimension;
-	if(row<matrix_dimension && column<matrix_dimension){
+		int row = (int) floor((double)id/matrix_dimension);
+		int column = id%matrix_dimension;
+
+	for(int k=0;k<MAXHOPS;k++){
 		
-		//for the source row if the matrix row column position has a manhattan set the buffer position to true
-		dev_buffer[id] = (dev_source_vector[row] && boolean_matrix[id]);
+		if(row<matrix_dimension && column<matrix_dimension ){
+		
+			//for the source row if the matrix row column position has a manhattan set the buffer position to true
+			dev_buffer1[k*matrix_dimension*matrix_dimension+id] = (dev_source_vector[row] && boolean_matrix[id]);
 		
 		
-	}
-	__syncthreads();
-	//set the source vector positions to zero by the first of each row
-	if(row<matrix_dimension && column<matrix_dimension&& column==0) dev_source_vector[row]= 0;
-	__syncthreads();
-	
-	if((row<matrix_dimension && column<matrix_dimension) && boolean_matrix[id]){
-		dev_source_vector[column] = 1;
+		}
+		__syncthreads();
+		//set the 'next source vector' positions to zero by the first of each row
+		if(row<matrix_dimension && column<matrix_dimension&& column==0) dev_source_vector[row]= 0;
+		__syncthreads();
+		
+		//if the relevant cell in the frame has been set, contribute to making sure the relevant cell in the 'next source vector' is set to 1
+		if((row<matrix_dimension && column<matrix_dimension) && dev_buffer1[k*matrix_dimension*matrix_dimension+id]){
+			dev_source_vector[column] = 1;
+		}
+
+		__syncthreads();
 	}
 }
 
@@ -384,7 +398,7 @@ int main(int argc)
 	cout<<"initializing Buffers"<<endl;
 
 	initializeBuffer(dev_level1);
-	initializeBuffer(dev_level2);
+	//initializeBuffer(dev_level2);
 	
 	cout<<"initialized buffers"<<endl;
 	///////////////////////////////////////Interations///////////////////////////////////////
@@ -410,19 +424,22 @@ int main(int argc)
 
 	ofstream myFile2;
 	myFile2.open("Frame1.txt");
-	int* myArray2 = (int*)malloc(ADJ_MATRIX_DIM*ADJ_MATRIX_DIM*sizeof(int));
+	int* myArray2 = (int*)malloc(MAXHOPS*ADJ_MATRIX_DIM*ADJ_MATRIX_DIM*sizeof(int));
 
-	   expansion<<<numBlocks,BLOCK_LENGTH>>>(dev_level1,dev_adj_matrix_boolean,dev_next_source_array,ADJ_MATRIX_DIM);
+	 expansion<<<numBlocks,BLOCK_LENGTH>>>(dev_level1,dev_adj_matrix_boolean,dev_next_source_array,ADJ_MATRIX_DIM);
 	 cudaThreadSynchronize();
 	 cudaCheckErrors("Error occured in expansion");
 	cout<<"finished expansion"<<endl;
-	  cudaMemcpy(myArray2,dev_level1,ADJ_MATRIX_DIM*ADJ_MATRIX_DIM*sizeof(int),cudaMemcpyDeviceToHost);
+	cudaMemcpy(myArray2,dev_level1,MAXHOPS*ADJ_MATRIX_DIM*ADJ_MATRIX_DIM*sizeof(int),cudaMemcpyDeviceToHost);
 	 cudaCheckErrors("Failed to retrieve memory from first frame");
-	for(int i=0;i<ADJ_MATRIX_DIM*ADJ_MATRIX_DIM;i++){
+	 
+	 for(int j=0;j<MAXHOPS;j++){
+		for(int i=0;i<ADJ_MATRIX_DIM*ADJ_MATRIX_DIM;i++){
 		//if(myArray[i]!= NULL)
-			myFile2<<myArray2[i];
-	}
-
+			myFile2<<myArray2[j*ADJ_MATRIX_DIM*ADJ_MATRIX_DIM+i];
+		}
+		myFile2<<endl;
+	 }
 	myFile2<<endl<<endl;
 	myFile2.close();
 
